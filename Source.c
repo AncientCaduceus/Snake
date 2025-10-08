@@ -144,14 +144,6 @@ int calculateFreeSpace() {
     return count;
 }
 
-int shouldPanic() {
-    int totalCells = (fieldMaxX - fieldMinX + 1) * (fieldMaxY - fieldMinY + 1);
-    int freeSpace = calculateFreeSpace();
-    float percentage = (float)freeSpace / totalCells;
-
-    return percentage < 0.8f;
-}
-
 // Improved pathfinding that considers snake length and avoids dead ends
 int findPath(int startX, int startY, int targetX, int targetY) {
     if (!isPositionValid(targetX, targetY)) return 0;
@@ -263,7 +255,182 @@ enum Direction getFirstMove(int startX, int startY, int targetX, int targetY) {
     return NONE;
 }
 
-// Improved safe direction finding that works better with walls
+// ... предыдущий код без изменений до botControl ...
+
+// Comprehensive safety check that prevents suicidal moves
+int isMoveSafe(int newX, int newY) {
+    // Basic collision check
+    if (!isPositionValid(newX, newY)) return 0;
+
+    // For short snakes, basic check is sufficient
+    if (snakeLength <= 3) return 1;
+
+    // Simulate the move and check if we trap ourselves
+    Segment tempSnake[MAX_SNAKE_LENGTH];
+    for (int i = 0; i < snakeLength; i++) {
+        tempSnake[i] = snake[i];
+    }
+
+    // Move the snake temporarily
+    for (int i = snakeLength - 1; i > 0; i--) {
+        tempSnake[i] = tempSnake[i - 1];
+    }
+    tempSnake[0].x = newX;
+    tempSnake[0].y = newY;
+
+    // Calculate accessible space from new position
+    int visited[40][30] = { 0 };
+    int queue[1200][2];
+    int front = 0, rear = 0;
+    int spaceCount = 0;
+
+    queue[rear][0] = newX;
+    queue[rear][1] = newY;
+    rear++;
+    visited[newX][newY] = 1;
+    spaceCount++;
+
+    int dx[] = { 0, 1, 0, -1 };
+    int dy[] = { -1, 0, 1, 0 };
+
+    while (front < rear) {
+        int x = queue[front][0];
+        int y = queue[front][1];
+        front++;
+
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx[i];
+            int ny = y + dy[i];
+
+            if (isValidNode(nx, ny) && !visited[nx][ny]) {
+                // Check if this position would be valid in the next move
+                int valid = 1;
+                for (int j = 0; j < snakeLength - 1; j++) { // -1 because tail moves
+                    if (nx == tempSnake[j].x && ny == tempSnake[j].y) {
+                        valid = 0;
+                        break;
+                    }
+                }
+                // Also check walls
+                if (valid) {
+                    for (int j = 0; j < wallsCount; j++) {
+                        if (nx == walls[j][0] && ny == walls[j][1]) {
+                            valid = 0;
+                            break;
+                        }
+                    }
+                }
+                // Check boundaries
+                if (valid && (nx < fieldMinX || nx > fieldMaxX || ny < fieldMinY || ny > fieldMaxY)) {
+                    valid = 0;
+                }
+
+                if (valid) {
+                    visited[nx][ny] = 1;
+                    queue[rear][0] = nx;
+                    queue[rear][1] = ny;
+                    rear++;
+                    spaceCount++;
+                }
+            }
+        }
+    }
+
+    // Consider move safe if we have enough accessible space
+    // For long snakes, we need more space to maneuver
+    int requiredSpace = snakeLength + 5;
+    return spaceCount >= requiredSpace;
+}
+
+// Improved pathfinding with safety checks
+int findSafePath(int startX, int startY, int targetX, int targetY) {
+    if (!isPositionValid(targetX, targetY)) return 0;
+
+    initNodes();
+
+    nodes[startX][startY].g = 0;
+    nodes[startX][startY].h = heuristic(startX, startY, targetX, targetY);
+    nodes[startX][startY].f = nodes[startX][startY].h;
+    openList[startX][startY] = 1;
+
+    int found = 0;
+
+    while (1) {
+        int minF = INT_MAX;
+        int currentX = -1, currentY = -1;
+
+        // Find node with lowest F score
+        for (int x = fieldMinX; x <= fieldMaxX; x++) {
+            for (int y = fieldMinY; y <= fieldMaxY; y++) {
+                if (openList[x][y] && nodes[x][y].f < minF) {
+                    minF = nodes[x][y].f;
+                    currentX = x;
+                    currentY = y;
+                }
+            }
+        }
+
+        if (currentX == -1 || currentY == -1) break;
+
+        openList[currentX][currentY] = 0;
+        closedList[currentX][currentY] = 1;
+
+        if (currentX == targetX && currentY == targetY) {
+            found = 1;
+            break;
+        }
+
+        int dx[] = { 0, 1, 0, -1 };
+        int dy[] = { -1, 0, 1, 0 };
+
+        for (int i = 0; i < 4; i++) {
+            int neighborX = currentX + dx[i];
+            int neighborY = currentY + dy[i];
+
+            if (!isValidNode(neighborX, neighborY)) continue;
+            if (closedList[neighborX][neighborY]) continue;
+
+            // Enhanced safety check for pathfinding
+            if (!isMoveSafe(neighborX, neighborY)) continue;
+
+            int tentativeG = nodes[currentX][currentY].g + 1;
+
+            // Additional penalty for moves that reduce mobility
+            int mobilityPenalty = 0;
+            if (snakeLength > 10) {
+                int safeExits = 0;
+                for (int j = 0; j < 4; j++) {
+                    int nextX = neighborX + dx[j];
+                    int nextY = neighborY + dy[j];
+                    if (isValidNode(nextX, nextY) && isMoveSafe(nextX, nextY)) {
+                        safeExits++;
+                    }
+                }
+                if (safeExits < 2) {
+                    mobilityPenalty = 10; // Heavy penalty for low mobility moves
+                }
+            }
+
+            tentativeG += mobilityPenalty;
+
+            if (!openList[neighborX][neighborY] || tentativeG < nodes[neighborX][neighborY].g) {
+                nodes[neighborX][neighborY].parentX = currentX;
+                nodes[neighborX][neighborY].parentY = currentY;
+                nodes[neighborX][neighborY].g = tentativeG;
+                nodes[neighborX][neighborY].h = heuristic(neighborX, neighborY, targetX, targetY);
+                nodes[neighborX][neighborY].f = nodes[neighborX][neighborY].g + nodes[neighborX][neighborY].h;
+
+                if (!openList[neighborX][neighborY]) {
+                    openList[neighborX][neighborY] = 1;
+                }
+            }
+        }
+    }
+
+    return found;
+}
+
+// Completely rewritten safe direction finding with comprehensive safety checks
 void findSafeDirection() {
     int headX = snake[0].x;
     int headY = snake[0].y;
@@ -272,51 +439,156 @@ void findSafeDirection() {
     int dy[] = { -1, 0, 1, 0 };
     enum Direction dirs[] = { UP, RIGHT, DOWN, LEFT };
 
-    // For short snakes, use simple validation
-    if (snakeLength <= 3) {
-        for (int i = 0; i < 4; i++) {
-            int newX = headX + dx[i];
-            int newY = headY + dy[i];
-            if (isPositionValid(newX, newY)) {
-                pendingDir = dirs[i];
-                return;
-            }
+    // First priority: find any safe move that doesn't trap us
+    for (int i = 0; i < 4; i++) {
+        int newX = headX + dx[i];
+        int newY = headY + dy[i];
+        if (isMoveSafe(newX, newY)) {
+            pendingDir = dirs[i];
+            return;
         }
-        return;
     }
 
-    // For longer snakes, find direction with most free space
+    // If no completely safe move, find the least dangerous move
     int bestDir = NONE;
-    int maxSpace = -1;
+    int maxSafeSpace = -1;
 
     for (int i = 0; i < 4; i++) {
         int newX = headX + dx[i];
         int newY = headY + dy[i];
 
-        if (isPositionValid(newX, newY)) {
-            // Temporarily move head to check space
-            Segment tempHead = snake[0];
-            snake[0].x = newX;
-            snake[0].y = newY;
+        if (!isPositionValid(newX, newY)) continue;
 
-            int space = calculateFreeSpace();
+        // Calculate safe accessible space from this position
+        int safeSpace = 0;
+        int visited[40][30] = { 0 };
+        int queue[1200][2];
+        int front = 0, rear = 0;
 
-            if (space > maxSpace) {
-                maxSpace = space;
-                bestDir = dirs[i];
+        queue[rear][0] = newX;
+        queue[rear][1] = newY;
+        rear++;
+        visited[newX][newY] = 1;
+        safeSpace++;
+
+        while (front < rear) {
+            int x = queue[front][0];
+            int y = queue[front][1];
+            front++;
+
+            for (int j = 0; j < 4; j++) {
+                int nx = x + dx[j];
+                int ny = y + dy[j];
+
+                if (isValidNode(nx, ny) && !visited[nx][ny] && isMoveSafe(nx, ny)) {
+                    visited[nx][ny] = 1;
+                    queue[rear][0] = nx;
+                    queue[rear][1] = ny;
+                    rear++;
+                    safeSpace++;
+                }
             }
+        }
 
-            // Restore head position
-            snake[0] = tempHead;
+        if (safeSpace > maxSafeSpace) {
+            maxSafeSpace = safeSpace;
+            bestDir = dirs[i];
         }
     }
 
     if (bestDir != NONE) {
         pendingDir = bestDir;
+        return;
     }
+
+    // Absolute last resort: any valid move that doesn't immediately kill us
+    for (int i = 0; i < 4; i++) {
+        int newX = headX + dx[i];
+        int newY = headY + dy[i];
+        if (isPositionValid(newX, newY)) {
+            pendingDir = dirs[i];
+            return;
+        }
+    }
+
+    // If all else fails, don't change direction
+    pendingDir = dir;
 }
 
-// Improved bot control with better handling of different levels
+// Improved panic detection that considers safe space, not just free space
+int shouldPanic() {
+    int safeSpace = 0;
+    int headX = snake[0].x;
+    int headY = snake[0].y;
+
+    int dx[] = { 0, 1, 0, -1 };
+    int dy[] = { -1, 0, 1, 0 };
+
+    int visited[40][30] = { 0 };
+    int queue[1200][2];
+    int front = 0, rear = 0;
+
+    queue[rear][0] = headX;
+    queue[rear][1] = headY;
+    rear++;
+    visited[headX][headY] = 1;
+    safeSpace++;
+
+    while (front < rear) {
+        int x = queue[front][0];
+        int y = queue[front][1];
+        front++;
+
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx[i];
+            int ny = y + dy[i];
+
+            if (isValidNode(nx, ny) && !visited[nx][ny] && isMoveSafe(nx, ny)) {
+                visited[nx][ny] = 1;
+                queue[rear][0] = nx;
+                queue[rear][1] = ny;
+                rear++;
+                safeSpace++;
+            }
+        }
+    }
+
+    int totalCells = (fieldMaxX - fieldMinX + 1) * (fieldMaxY - fieldMinY + 1);
+    float percentage = (float)safeSpace / totalCells;
+
+    // More conservative panic threshold that considers snake length
+    float panicThreshold = 0.7f - (snakeLength * 0.01f); // Longer snakes panic earlier
+    if (panicThreshold < 0.3f) panicThreshold = 0.3f;
+
+    return percentage < panicThreshold;
+}
+
+enum Direction getFirstMoveFromSafePath(int startX, int startY, int targetX, int targetY) {
+    if (!findSafePath(startX, startY, targetX, targetY)) return NONE;
+
+    // Trace back to find first move
+    int currentX = targetX, currentY = targetY;
+
+    while (!(nodes[currentX][currentY].parentX == startX &&
+        nodes[currentX][currentY].parentY == startY)) {
+        int parentX = nodes[currentX][currentY].parentX;
+        int parentY = nodes[currentX][currentY].parentY;
+
+        if (parentX == -1 || parentY == -1) return NONE;
+
+        currentX = parentX;
+        currentY = parentY;
+    }
+
+    if (currentX == startX && currentY == startY - 1) return UP;
+    if (currentX == startX && currentY == startY + 1) return DOWN;
+    if (currentX == startX - 1 && currentY == startY) return LEFT;
+    if (currentX == startX + 1 && currentY == startY) return RIGHT;
+
+    return NONE;
+}
+
+// Completely rewritten bot control with comprehensive safety
 void botControl() {
     if (gameOver || !botEnabled) return;
 
@@ -330,62 +602,27 @@ void botControl() {
     int headX = snake[0].x;
     int headY = snake[0].y;
 
-    // Special handling for level 2 and 3 with internal walls
-    if (currentLevel >= 2) {
-        // Try to find path to target with multiple attempts
-        enum Direction nextDir = NONE;
+    // Use safe pathfinding for all levels
+    enum Direction nextDir = NONE;
 
-        // Prioritize bonus over food
-        if (currentBonus.type != -1) {
-            nextDir = getFirstMove(headX, headY, currentBonus.x, currentBonus.y);
-        }
+    // Prioritize bonus with safety check
+    if (currentBonus.type != -1) {
+        nextDir = getFirstMoveFromSafePath(headX, headY, currentBonus.x, currentBonus.y);
+    }
 
-        // If no path to bonus or no bonus, try food
-        if (nextDir == NONE) {
-            nextDir = getFirstMove(headX, headY, foodX, foodY);
-        }
+    // Safe path to food
+    if (nextDir == NONE) {
+        nextDir = getFirstMoveFromSafePath(headX, headY, foodX, foodY);
+    }
 
-        // If still no path, try to find any valid move
-        if (nextDir == NONE) {
-            findSafeDirection();
-            return;
-        }
-
+    // If safe path found, use it
+    if (nextDir != NONE) {
         pendingDir = nextDir;
         return;
     }
 
-    // For level 1, use standard logic
-    int targetX, targetY;
-    if (currentBonus.type != -1) {
-        targetX = currentBonus.x;
-        targetY = currentBonus.y;
-    }
-    else {
-        targetX = foodX;
-        targetY = foodY;
-    }
-
-    enum Direction nextDir = getFirstMove(headX, headY, targetX, targetY);
-
-    if (nextDir != NONE) {
-        pendingDir = nextDir;
-    }
-    else {
-        // If no path found, try to find path to food instead of bonus
-        if (currentBonus.type != -1) {
-            nextDir = getFirstMove(headX, headY, foodX, foodY);
-            if (nextDir != NONE) {
-                pendingDir = nextDir;
-            }
-            else {
-                findSafeDirection();
-            }
-        }
-        else {
-            findSafeDirection();
-        }
-    }
+    // If no safe path to targets, find safest available move
+    findSafeDirection();
 }
 
 void initGame(int level) {
