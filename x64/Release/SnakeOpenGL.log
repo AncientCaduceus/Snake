@@ -1,5 +1,19 @@
-﻿  Создание кода
-  0 of 21 functions ( 0.0%) were compiled, the rest were copied from previous compilation.
+﻿  Source.c
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(667,18): warning C4244: функция: преобразование "int" в "GLfloat", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(667,33): warning C4244: функция: преобразование "int" в "GLfloat", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(668,24): warning C4244: функция: преобразование "int" в "GLfloat", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(668,39): warning C4244: функция: преобразование "int" в "GLfloat", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(669,24): warning C4244: функция: преобразование "int" в "GLfloat", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(669,45): warning C4244: функция: преобразование "int" в "GLfloat", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(670,18): warning C4244: функция: преобразование "int" в "GLfloat", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(670,39): warning C4244: функция: преобразование "int" в "GLfloat", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(695,47): warning C4090: "функция": разные квалификаторы "const"
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(733,53): warning C4090: "функция": разные квалификаторы "const"
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(771,64): warning C4244: функция: преобразование "int" в "float", возможна потеря данных
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(831,54): warning C4090: "функция": разные квалификаторы "const"
+D:\Soft\Visual Studio\source\repos\SnakeOpenGL\SnakeOpenGL\Source.c(835,51): warning C4090: "функция": разные квалификаторы "const"
+  Создание кода
+  1 of 30 functions ( 3.3%) were compiled, the rest were copied from previous compilation.
     0 functions were new in current compilation
     0 functions had inline decision re-evaluated but remain unchanged
   Создание кода завершено

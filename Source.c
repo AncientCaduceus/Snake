@@ -5,11 +5,13 @@
 #include <stdlib.h>
 #include <GLFW/glfw3.h>     
 #include <time.h>
+#include <math.h>
+#include <limits.h>
 
 #define WIDTH 800
 #define HEIGHT 600
 #define CELL_SIZE 20 
-#define UPDATE_INTERVAL 0.15
+#define UPDATE_INTERVAL 0.00000015
 #define WALL_THICKNESS 1
 #define MAX_SNAKE_LENGTH 500
 #define MAX_WALLS 200
@@ -50,11 +52,24 @@ double multiplierStartTime = 0.0;
 enum GameState gameState = MENU;
 int currentLevel = 1;
 
-
 const int fieldMinX = WALL_THICKNESS;
 const int fieldMaxX = (WIDTH / CELL_SIZE) - WALL_THICKNESS - 1;
 const int fieldMinY = WALL_THICKNESS;
 const int fieldMaxY = (HEIGHT / CELL_SIZE) - WALL_THICKNESS - 1;
+
+// Bot-related variables and functions
+int botEnabled = 1;
+int panicMode = 0;
+
+typedef struct {
+    int x, y;
+    int f, g, h;
+    int parentX, parentY;
+} Node;
+
+Node nodes[40][30]; // Grid for pathfinding
+int closedList[40][30];
+int openList[40][30];
 
 int isPositionValid(int x, int y) {
     if (x < fieldMinX || x > fieldMaxX || y < fieldMinY || y > fieldMaxY)
@@ -66,6 +81,255 @@ int isPositionValid(int x, int y) {
         if (x == snake[i].x && y == snake[i].y)
             return 0;
     return 1;
+}
+
+int heuristic(int x1, int y1, int x2, int y2) {
+    return abs(x1 - x2) + abs(y1 - y2);
+}
+
+void initNodes() {
+    for (int x = fieldMinX; x <= fieldMaxX; x++) {
+        for (int y = fieldMinY; y <= fieldMaxY; y++) {
+            nodes[x][y].x = x;
+            nodes[x][y].y = y;
+            nodes[x][y].f = INT_MAX;
+            nodes[x][y].g = INT_MAX;
+            nodes[x][y].h = 0;
+            nodes[x][y].parentX = -1;
+            nodes[x][y].parentY = -1;
+            closedList[x][y] = 0;
+            openList[x][y] = 0;
+        }
+    }
+}
+
+int isValidNode(int x, int y) {
+    return x >= fieldMinX && x <= fieldMaxX && y >= fieldMinY && y <= fieldMaxY;
+}
+
+int calculateFreeSpace() {
+    int visited[40][30] = { 0 };
+    int queue[1200][2];
+    int front = 0, rear = 0;
+    int count = 0;
+
+    queue[rear][0] = snake[0].x;
+    queue[rear][1] = snake[0].y;
+    rear++;
+    visited[snake[0].x][snake[0].y] = 1;
+    count++;
+
+    int dx[] = { 0, 1, 0, -1 };
+    int dy[] = { -1, 0, 1, 0 };
+
+    while (front < rear) {
+        int x = queue[front][0];
+        int y = queue[front][1];
+        front++;
+
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx[i];
+            int ny = y + dy[i];
+
+            if (isValidNode(nx, ny) && !visited[nx][ny] && isPositionValid(nx, ny)) {
+                visited[nx][ny] = 1;
+                queue[rear][0] = nx;
+                queue[rear][1] = ny;
+                rear++;
+                count++;
+            }
+        }
+    }
+
+    return count;
+}
+
+int shouldPanic() {
+    int totalCells = (fieldMaxX - fieldMinX + 1) * (fieldMaxY - fieldMinY + 1);
+    int freeSpace = calculateFreeSpace();
+    float percentage = (float)freeSpace / totalCells;
+
+    return percentage < 0.8f;
+}
+
+int findPath(int startX, int startY, int targetX, int targetY) {
+    if (!isPositionValid(targetX, targetY)) return 0;
+
+    initNodes();
+
+    nodes[startX][startY].g = 0;
+    nodes[startX][startY].h = heuristic(startX, startY, targetX, targetY);
+    nodes[startX][startY].f = nodes[startX][startY].h;
+    openList[startX][startY] = 1;
+
+    int found = 0;
+
+    while (1) {
+        int minF = INT_MAX;
+        int currentX = -1, currentY = -1;
+
+        // Find node with lowest F score
+        for (int x = fieldMinX; x <= fieldMaxX; x++) {
+            for (int y = fieldMinY; y <= fieldMaxY; y++) {
+                if (openList[x][y] && nodes[x][y].f < minF) {
+                    minF = nodes[x][y].f;
+                    currentX = x;
+                    currentY = y;
+                }
+            }
+        }
+
+        if (currentX == -1 || currentY == -1) break;
+
+        openList[currentX][currentY] = 0;
+        closedList[currentX][currentY] = 1;
+
+        if (currentX == targetX && currentY == targetY) {
+            found = 1;
+            break;
+        }
+
+        int dx[] = { 0, 1, 0, -1 };
+        int dy[] = { -1, 0, 1, 0 };
+
+        for (int i = 0; i < 4; i++) {
+            int neighborX = currentX + dx[i];
+            int neighborY = currentY + dy[i];
+
+            if (!isValidNode(neighborX, neighborY)) continue;
+            if (!isPositionValid(neighborX, neighborY)) continue;
+            if (closedList[neighborX][neighborY]) continue;
+
+            int tentativeG = nodes[currentX][currentY].g + 1;
+
+            if (!openList[neighborX][neighborY] || tentativeG < nodes[neighborX][neighborY].g) {
+                nodes[neighborX][neighborY].parentX = currentX;
+                nodes[neighborX][neighborY].parentY = currentY;
+                nodes[neighborX][neighborY].g = tentativeG;
+                nodes[neighborX][neighborY].h = heuristic(neighborX, neighborY, targetX, targetY);
+                nodes[neighborX][neighborY].f = nodes[neighborX][neighborY].g + nodes[neighborX][neighborY].h;
+
+                if (!openList[neighborX][neighborY]) {
+                    openList[neighborX][neighborY] = 1;
+                }
+            }
+        }
+    }
+
+    return found;
+}
+
+enum Direction getFirstMove(int startX, int startY, int targetX, int targetY) {
+    if (!findPath(startX, startY, targetX, targetY)) return NONE;
+
+    // Trace back to find first move
+    int currentX = targetX, currentY = targetY;
+    int prevX = -1, prevY = -1;
+
+    while (!(nodes[currentX][currentY].parentX == startX &&
+        nodes[currentX][currentY].parentY == startY)) {
+        prevX = currentX;
+        prevY = currentY;
+        currentX = nodes[currentX][currentY].parentX;
+        currentY = nodes[currentX][currentY].parentY;
+
+        if (currentX == -1 || currentY == -1) return NONE;
+    }
+
+    prevX = currentX;
+    prevY = currentY;
+
+    if (prevX == startX && prevY == startY - 1) return UP;
+    if (prevX == startX && prevY == startY + 1) return DOWN;
+    if (prevX == startX - 1 && prevY == startY) return LEFT;
+    if (prevX == startX + 1 && prevY == startY) return RIGHT;
+
+    return NONE;
+}
+
+void findSafeDirection() {
+    // Find the safest direction when in panic mode
+    int headX = snake[0].x;
+    int headY = snake[0].y;
+
+    int dx[] = { 0, 1, 0, -1 };
+    int dy[] = { -1, 0, 1, 0 };
+    enum Direction dirs[] = { UP, RIGHT, DOWN, LEFT };
+
+    int bestDir = NONE;
+    int maxSpace = -1;
+
+    for (int i = 0; i < 4; i++) {
+        int newX = headX + dx[i];
+        int newY = headY + dy[i];
+
+        if (isPositionValid(newX, newY)) {
+            // Temporarily move head to check space
+            Segment temp = snake[0];
+            snake[0].x = newX;
+            snake[0].y = newY;
+
+            int space = calculateFreeSpace();
+
+            if (space > maxSpace) {
+                maxSpace = space;
+                bestDir = dirs[i];
+            }
+
+            // Restore head position
+            snake[0] = temp;
+        }
+    }
+
+    if (bestDir != NONE) {
+        pendingDir = bestDir;
+    }
+}
+
+void botControl() {
+    if (gameOver || !botEnabled) return;
+
+    panicMode = shouldPanic();
+
+    if (panicMode) {
+        findSafeDirection();
+        return;
+    }
+
+    int headX = snake[0].x;
+    int headY = snake[0].y;
+
+    // Prioritize bonus over food
+    int targetX, targetY;
+    if (currentBonus.type != -1) {
+        targetX = currentBonus.x;
+        targetY = currentBonus.y;
+    }
+    else {
+        targetX = foodX;
+        targetY = foodY;
+    }
+
+    enum Direction nextDir = getFirstMove(headX, headY, targetX, targetY);
+
+    if (nextDir != NONE) {
+        pendingDir = nextDir;
+    }
+    else {
+        // If no path found, try to find path to food instead of bonus
+        if (currentBonus.type != -1) {
+            nextDir = getFirstMove(headX, headY, foodX, foodY);
+            if (nextDir != NONE) {
+                pendingDir = nextDir;
+            }
+            else {
+                findSafeDirection();
+            }
+        }
+        else {
+            findSafeDirection();
+        }
+    }
 }
 
 void initGame(int level) {
@@ -85,6 +349,7 @@ void initGame(int level) {
     lastBonusTime = -30.0;
     currentBonus.type = -1;
     multiplierActive = 0;
+    panicMode = 0;
 
     currentLevel = level;
 
@@ -227,6 +492,7 @@ void processInput(GLFWwindow* window) {
     static int iKeyPressed = 0;
     static int rKeyPressed = 0;
     static int eKeyPressed = 0;
+    static int bKeyPressed = 0;
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, 1);
@@ -256,6 +522,15 @@ void processInput(GLFWwindow* window) {
         }
     }
     else if (gameState == PLAYING) {
+        // Toggle bot with B key
+        if (glfwGetKey(window, GLFW_KEY_B) == GLFW_PRESS && !bKeyPressed) {
+            botEnabled = !botEnabled;
+            bKeyPressed = 1;
+        }
+        else if (glfwGetKey(window, GLFW_KEY_B) == GLFW_RELEASE) {
+            bKeyPressed = 0;
+        }
+
         if (gameOver) {
             if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS && !rKeyPressed) {
                 initGame(currentLevel);
@@ -274,14 +549,17 @@ void processInput(GLFWwindow* window) {
             return;
         }
 
-        if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS && dir != DOWN)
-            pendingDir = UP;
-        if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS && dir != UP)
-            pendingDir = DOWN;
-        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS && dir != RIGHT)
-            pendingDir = LEFT;
-        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS && dir != LEFT)
-            pendingDir = RIGHT;
+        // Manual controls (only if bot is disabled)
+        if (!botEnabled) {
+            if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS && dir != DOWN)
+                pendingDir = UP;
+            if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS && dir != UP)
+                pendingDir = DOWN;
+            if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS && dir != RIGHT)
+                pendingDir = LEFT;
+            if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS && dir != LEFT)
+                pendingDir = RIGHT;
+        }
 
         if (glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS && !iKeyPressed) {
             gameState = MENU;
@@ -295,6 +573,11 @@ void processInput(GLFWwindow* window) {
 
 void updateGame() {
     if (gameOver || gameState != PLAYING) return;
+
+    // Bot control
+    if (botEnabled) {
+        botControl();
+    }
 
     if (pendingDir != NONE) {
         dir = pendingDir;
@@ -516,6 +799,17 @@ void render() {
             char scoreText[32];
             sprintf(scoreText, "Score: %d", score);
             renderText(scoreText, 25, 30, 4.0f);
+
+            // Display bot status
+            if (botEnabled) {
+                renderText("Bot: ON", WIDTH - 150, 30, 3.0f);
+                if (panicMode) {
+                    renderText("PANIC MODE", WIDTH - 200, 60, 3.0f);
+                }
+            }
+            else {
+                renderText("Bot: OFF", WIDTH - 150, 30, 3.0f);
+            }
         }
 
         if (gameOver) {
@@ -554,7 +848,7 @@ int main() {
     srand((unsigned int)time(NULL));  //    
 
     if (!glfwInit()) return -1;
-    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Snake Game", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Snake Game with Bot", NULL, NULL);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
