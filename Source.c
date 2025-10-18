@@ -11,10 +11,12 @@
 #define WIDTH 800
 #define HEIGHT 600
 #define CELL_SIZE 20 
-#define UPDATE_INTERVAL 0.15
+#define UPDATE_INTERVAL 0.00000000000015
 #define WALL_THICKNESS 1
 #define MAX_SNAKE_LENGTH 500
 #define MAX_WALLS 200
+#define SIMULATION_DEPTH 4
+#define BONUS_LIFETIME 100
 
 typedef struct {
     int x;
@@ -25,7 +27,7 @@ typedef struct {
     int x;
     int y;
     int type;
-    double spawnTime;
+    int lifetime; // Время жизни в ходах вместо времени
 } Bonus;
 
 enum Direction { UP, DOWN, LEFT, RIGHT, NONE };
@@ -44,16 +46,9 @@ int walls[MAX_WALLS][2];
 int wallsCount = 0;
 int foodEaten = 0;
 
-int cachedFreeSpace = 0;
-int cacheValid = 0;
-int lastHeadX = -1, lastHeadY = -1;
-int lastSnakeLength = -1;
-int cacheFrame = 0;
-
-double lastBonusTime = -30.0;
-Bonus currentBonus = { -1, -1, -1, 0.0 };
+Bonus currentBonus = { -1, -1, -1, 0 };
+int multiplierCount = 0; // Количество оставшихся яблок с множителем
 int multiplierActive = 0;
-double multiplierStartTime = 0.0;
 
 enum GameState gameState = MENU;
 int currentLevel = 1;
@@ -67,28 +62,53 @@ const int fieldMaxY = (HEIGHT / CELL_SIZE) - WALL_THICKNESS - 1;
 int botEnabled = 1;
 int panicMode = 0;
 
+// Hunger system variables
+int hungerCounter = 0;
+float currentHungerPenalty = 0.0f;
+
 typedef struct {
     int x, y;
     int f, g, h;
     int parentX, parentY;
 } Node;
 
-Node nodes[40][30];
+Node nodes[40][30]; // Grid for pathfinding
 int closedList[40][30];
 int openList[40][30];
 
-int isPositionValid(int x, int y) {
-    if (x < fieldMinX || x > fieldMaxX || y < fieldMinY || y > fieldMaxY)
-        return 0;
-    for (int i = 0; i < wallsCount; i++)
-        if (x == walls[i][0] && y == walls[i][1])
-            return 0;
-    for (int i = 0; i < snakeLength; i++)
-        if (x == snake[i].x && y == snake[i].y)
-            return 0;
-    return 1;
+// Simulation structures
+typedef struct {
+    Segment snake[MAX_SNAKE_LENGTH];
+    int snakeLength;
+    int foodX, foodY;
+    Bonus bonus;
+    int score;
+    int multiplierCount;
+    int walls[MAX_WALLS][2];
+    int wallsCount;
+} SimulationState;
+
+// Hunger system functions
+void updateHungerPenalty() {
+    if (snake[0].x == foodX && snake[0].y == foodY) {
+        // Reset hunger when eating food
+        hungerCounter = 0;
+        currentHungerPenalty = 0.0f;
+    }
+    else {
+        // Increase hunger each move
+        hungerCounter++;
+        // Penalty increases non-linearly - slowly at first, then faster
+        currentHungerPenalty = hungerCounter * hungerCounter * 0.1f;
+
+        // Maximum penalty to not override safety
+        if (currentHungerPenalty > 50.0f) {
+            currentHungerPenalty = 50.0f;
+        }
+    }
 }
 
+// Pathfinding functions
 int heuristic(int x1, int y1, int x2, int y2) {
     return abs(x1 - x2) + abs(y1 - y2);
 }
@@ -113,25 +133,23 @@ int isValidNode(int x, int y) {
     return x >= fieldMinX && x <= fieldMaxX && y >= fieldMinY && y <= fieldMaxY;
 }
 
-// Improved A* pathfinding that considers snake body and walls properly
+// Improved pathfinding that considers walls
 int findPath(int startX, int startY, int targetX, int targetY) {
     if (!isPositionValid(targetX, targetY)) return 0;
-    
+
     initNodes();
-    
+
     nodes[startX][startY].g = 0;
     nodes[startX][startY].h = heuristic(startX, startY, targetX, targetY);
     nodes[startX][startY].f = nodes[startX][startY].h;
     openList[startX][startY] = 1;
-    
+
     int found = 0;
-    int nodesProcessed = 0;
-    const int MAX_NODES = 300; // Reasonable limit for performance
-    
-    while (nodesProcessed < MAX_NODES) {
+
+    while (1) {
         int minF = INT_MAX;
         int currentX = -1, currentY = -1;
-        
+
         // Find node with lowest F score
         for (int x = fieldMinX; x <= fieldMaxX; x++) {
             for (int y = fieldMinY; y <= fieldMaxY; y++) {
@@ -142,99 +160,466 @@ int findPath(int startX, int startY, int targetX, int targetY) {
                 }
             }
         }
-        
+
         if (currentX == -1 || currentY == -1) break;
-        
+
         openList[currentX][currentY] = 0;
         closedList[currentX][currentY] = 1;
-        nodesProcessed++;
-        
+
         if (currentX == targetX && currentY == targetY) {
             found = 1;
             break;
         }
-        
-        int dx[] = {0, 1, 0, -1};
-        int dy[] = {-1, 0, 1, 0};
-        
+
+        int dx[] = { 0, 1, 0, -1 };
+        int dy[] = { -1, 0, 1, 0 };
+
         for (int i = 0; i < 4; i++) {
             int neighborX = currentX + dx[i];
             int neighborY = currentY + dy[i];
-            
+
             if (!isValidNode(neighborX, neighborY)) continue;
             if (!isPositionValid(neighborX, neighborY)) continue;
             if (closedList[neighborX][neighborY]) continue;
-            
+
             int tentativeG = nodes[currentX][currentY].g + 1;
-            
-            // Add penalty for moves that are too close to walls or body for long snakes
-            if (snakeLength > 15) {
-                int danger = 0;
-                for (int j = 0; j < 4; j++) {
-                    int checkX = neighborX + dx[j];
-                    int checkY = neighborY + dy[j];
-                    if (!isPositionValid(checkX, checkY)) {
-                        danger++;
-                    }
-                }
-                // Avoid moves with 3 or more blocked directions
-                if (danger >= 3) {
-                    tentativeG += 5;
-                }
-            }
-            
+
             if (!openList[neighborX][neighborY] || tentativeG < nodes[neighborX][neighborY].g) {
                 nodes[neighborX][neighborY].parentX = currentX;
                 nodes[neighborX][neighborY].parentY = currentY;
                 nodes[neighborX][neighborY].g = tentativeG;
                 nodes[neighborX][neighborY].h = heuristic(neighborX, neighborY, targetX, targetY);
                 nodes[neighborX][neighborY].f = nodes[neighborX][neighborY].g + nodes[neighborX][neighborY].h;
-                
+
                 if (!openList[neighborX][neighborY]) {
                     openList[neighborX][neighborY] = 1;
                 }
             }
         }
     }
-    
+
     return found;
 }
 
-enum Direction getFirstMove(int startX, int startY, int targetX, int targetY) {
-    if (!findPath(startX, startY, targetX, targetY)) return NONE;
-    
-    // Trace back to find first move
-    int currentX = targetX, currentY = targetY;
-    
-    while (!(nodes[currentX][currentY].parentX == startX && 
-             nodes[currentX][currentY].parentY == startY)) {
-        int parentX = nodes[currentX][currentY].parentX;
-        int parentY = nodes[currentX][currentY].parentY;
-        
-        if (parentX == -1 || parentY == -1) return NONE;
-        
-        currentX = parentX;
-        currentY = parentY;
+// Calculate actual distance considering walls
+int calculateActualDistance(int startX, int startY, int targetX, int targetY) {
+    if (!findPath(startX, startY, targetX, targetY)) {
+        return 1000; // Large penalty if no path exists
     }
-    
-    if (currentX == startX && currentY == startY - 1) return UP;
-    if (currentX == startX && currentY == startY + 1) return DOWN;
-    if (currentX == startX - 1 && currentY == startY) return LEFT;
-    if (currentX == startX + 1 && currentY == startY) return RIGHT;
-    
-    return NONE;
+
+    return nodes[targetX][targetY].g;
 }
 
-// Calculate accessible space from current position
-int calculateFreeSpace() {
-    // Проверяем, можно ли использовать кэшированное значение
-    if (cacheValid &&
-        snake[0].x == lastHeadX &&
-        snake[0].y == lastHeadY &&
-        snakeLength == lastSnakeLength) {
-        return cachedFreeSpace;
+// Core game functions
+int isPositionValid(int x, int y) {
+    if (x < fieldMinX || x > fieldMaxX || y < fieldMinY || y > fieldMaxY)
+        return 0;
+    for (int i = 0; i < wallsCount; i++)
+        if (x == walls[i][0] && y == walls[i][1])
+            return 0;
+    for (int i = 0; i < snakeLength; i++)
+        if (x == snake[i].x && y == snake[i].y)
+            return 0;
+    return 1;
+}
+
+int isPositionValidInSimulation(SimulationState* state, int x, int y) {
+    if (x < fieldMinX || x > fieldMaxX || y < fieldMinY || y > fieldMaxY)
+        return 0;
+    for (int i = 0; i < state->wallsCount; i++)
+        if (x == state->walls[i][0] && y == state->walls[i][1])
+            return 0;
+    for (int i = 0; i < state->snakeLength; i++)
+        if (x == state->snake[i].x && y == state->snake[i].y)
+            return 0;
+    return 1;
+}
+
+void copyGameStateToSimulation(SimulationState* sim) {
+    // Copy snake
+    for (int i = 0; i < snakeLength; i++) {
+        sim->snake[i].x = snake[i].x;
+        sim->snake[i].y = snake[i].y;
+    }
+    sim->snakeLength = snakeLength;
+
+    // Copy food and bonus
+    sim->foodX = foodX;
+    sim->foodY = foodY;
+    sim->bonus.x = currentBonus.x;
+    sim->bonus.y = currentBonus.y;
+    sim->bonus.type = currentBonus.type;
+    sim->bonus.lifetime = currentBonus.lifetime;
+
+    // Copy walls
+    for (int i = 0; i < wallsCount; i++) {
+        sim->walls[i][0] = walls[i][0];
+        sim->walls[i][1] = walls[i][1];
+    }
+    sim->wallsCount = wallsCount;
+
+    // Copy game state
+    sim->score = score;
+    sim->multiplierCount = multiplierCount;
+}
+
+int makeMoveInSimulation(SimulationState* state, enum Direction moveDir) {
+    if (state->snakeLength <= 0) return 0;
+
+    Segment newHead = state->snake[0];
+    switch (moveDir) {
+    case UP:    newHead.y--; break;
+    case DOWN:  newHead.y++; break;
+    case LEFT:  newHead.x--; break;
+    case RIGHT: newHead.x++; break;
+    case NONE: return 0;
     }
 
+    // Check collision
+    if (!isPositionValidInSimulation(state, newHead.x, newHead.y))
+        return 0;
+
+    // Move snake
+    for (int i = state->snakeLength - 1; i > 0; i--) {
+        state->snake[i] = state->snake[i - 1];
+    }
+    state->snake[0] = newHead;
+
+    // Check food consumption
+    if (newHead.x == state->foodX && newHead.y == state->foodY) {
+        if (state->snakeLength < MAX_SNAKE_LENGTH) {
+            state->snakeLength++;
+            state->snake[state->snakeLength - 1] = state->snake[state->snakeLength - 2];
+        }
+
+        // Generate new food in simulation
+        do {
+            state->foodX = fieldMinX + rand() % (fieldMaxX - fieldMinX + 1);
+            state->foodY = fieldMinY + rand() % (fieldMaxY - fieldMinY + 1);
+        } while (!isPositionValidInSimulation(state, state->foodX, state->foodY));
+    }
+
+    // Check bonus consumption
+    if (state->bonus.type != -1 && newHead.x == state->bonus.x && newHead.y == state->bonus.y) {
+        state->bonus.type = -1; // Bonus collected
+    }
+
+    return 1;
+}
+
+int calculateFreeSpaceInSimulation(SimulationState* state) {
+    int visited[40][30] = { 0 };
+    int queue[1200][2];
+    int front = 0, rear = 0;
+    int count = 0;
+
+    int startX = state->snake[0].x;
+    int startY = state->snake[0].y;
+
+    queue[rear][0] = startX;
+    queue[rear][1] = startY;
+    rear++;
+    visited[startX][startY] = 1;
+    count++;
+
+    int dx[] = { 0, 1, 0, -1 };
+    int dy[] = { -1, 0, 1, 0 };
+
+    while (front < rear) {
+        int x = queue[front][0];
+        int y = queue[front][1];
+        front++;
+
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx[i];
+            int ny = y + dy[i];
+
+            if (nx >= fieldMinX && nx <= fieldMaxX && ny >= fieldMinY && ny <= fieldMaxY &&
+                !visited[nx][ny] && isPositionValidInSimulation(state, nx, ny)) {
+                visited[nx][ny] = 1;
+                queue[rear][0] = nx;
+                queue[rear][1] = ny;
+                rear++;
+                count++;
+            }
+        }
+    }
+
+    return count;
+}
+
+// Improved evaluation function with actual distance calculation and bonus priority
+float evaluateSimulationState(SimulationState* state) {
+    if (state->snakeLength <= 0) return -10000.0f;
+
+    float score = 0.0f;
+    int headX = state->snake[0].x;
+    int headY = state->snake[0].y;
+
+    // Calculate actual distances considering walls
+    int foodDist = calculateActualDistance(headX, headY, state->foodX, state->foodY);
+    int bonusDist = (state->bonus.type != -1) ?
+        calculateActualDistance(headX, headY, state->bonus.x, state->bonus.y) : 1000;
+
+    // Bonus for eating food
+    if (headX == state->foodX && headY == state->foodY) {
+        score += 300.0f;
+    }
+
+    // Distance to food - main factor
+    score -= foodDist * 2.0f;
+
+    // HIGH PRIORITY FOR BONUSES
+    if (state->bonus.type != -1) {
+        // Very high bonus for collecting bonus
+        if (headX == state->bonus.x && headY == state->bonus.y) {
+            score += 1000.0f; // Much higher than food
+        }
+
+        // Distance to bonus - higher priority than food
+        score -= bonusDist * 1.5f;
+
+        // Extra incentive for nearby bonuses
+        if (bonusDist < 5) {
+            score += (5 - bonusDist) * 10.0f;
+        }
+    }
+
+    // Safety evaluation
+    int safeMoves = 0;
+    int dx[] = { 0, 1, 0, -1 };
+    int dy[] = { -1, 0, 1, 0 };
+
+    for (int i = 0; i < 4; i++) {
+        int nx = headX + dx[i];
+        int ny = headY + dy[i];
+        if (isPositionValidInSimulation(state, nx, ny)) {
+            safeMoves++;
+        }
+    }
+
+    // Penalty for dangerous positions
+    float safetyMultiplier = 1.0f;
+    if (safeMoves == 0) {
+        score -= 1000.0f; // Смерть всё так же страшна
+        safetyMultiplier = 0.1f;
+    }
+    else if (safeMoves == 1) {
+        score -= 30.0f; // Значительно уменьшаем штраф за 1 безопасный ход
+        safetyMultiplier = 0.5f;
+    }
+    else if (safeMoves == 2) {
+        score -= 5.0f;  // Немного штрафуем за 2 хода
+        safetyMultiplier = 0.8f;
+    }
+    else {
+        score += safeMoves * 2.0f; // Поощряем открытые пространства
+        safetyMultiplier = 1.0f;
+    }
+
+    // Hunger penalty adjusted by safety level
+    float adjustedHungerPenalty = currentHungerPenalty * safetyMultiplier;
+    score -= adjustedHungerPenalty;
+
+    // Free space - moderate importance
+    int freeSpace = calculateFreeSpaceInSimulation(state);
+    score += freeSpace * 0.1f;
+
+    // Snake length - small bonus
+    score += state->snakeLength * 1.0f;
+
+    return score;
+}
+
+// Simulation function with fixed depth
+float simulateGame(SimulationState* state, enum Direction firstMove, int depth) {
+    // Base case: if simulation depth is reached, evaluate the final state.
+    if (depth <= 0) {
+        return evaluateSimulationState(state);
+    }
+
+    SimulationState currentState = *state;
+    float moveScore = 0.0f; // This will hold the immediate bonus for eating.
+
+    // Make the first move for this simulation step.
+    if (!makeMoveInSimulation(&currentState, firstMove)) {
+        return -10000.0f; // Return a very low score if the move is fatal.
+    }
+
+    // Check if the move resulted in eating food and add a bonus.
+    // CRITICAL CHANGE: We add to moveScore but DO NOT return.
+    if (currentState.snake[0].x == foodX &&
+        currentState.snake[0].y == foodY) {
+        moveScore += 500.0f;
+    }
+
+    // Check if the move resulted in eating a bonus and add a larger bonus.
+    if (currentState.bonus.type != -1 &&
+        currentState.snake[0].x == currentState.bonus.x &&
+        currentState.snake[0].y == currentState.bonus.y) {
+        moveScore += 1500.0f;
+    }
+
+    // If this was the last step in the simulation, return the evaluation plus any bonus.
+    if (depth <= 1) {
+        return moveScore + evaluateSimulationState(&currentState);
+    }
+
+    // --- Recursive Simulation Part ---
+    float bestFutureScore = -10000.0f;
+    enum Direction directions[] = { UP, RIGHT, DOWN, LEFT };
+    int headX = currentState.snake[0].x;
+    int headY = currentState.snake[0].y;
+
+    for (int i = 0; i < 4; i++) {
+        int nx = headX, ny = headY;
+        switch (directions[i]) {
+        case UP:    ny--; break;
+        case DOWN:  ny++; break;
+        case LEFT:  nx--; break;
+        case RIGHT: nx++; break;
+        case NONE: continue;
+        }
+
+        // Check if the next potential move is valid
+        if (isPositionValidInSimulation(&currentState, nx, ny)) {
+            // Recursively call simulateGame for the next depth level
+            float score = simulateGame(&currentState, directions[i], depth - 1);
+            if (score > bestFutureScore) {
+                bestFutureScore = score;
+            }
+        }
+    }
+
+    // If no future moves were possible, evaluate the current state.
+    // Otherwise, return the combined score.
+    if (bestFutureScore <= -10000.0f) {
+        return moveScore + evaluateSimulationState(&currentState);
+    }
+
+    // The final score for this path is the immediate bonus + the best score from future moves.
+    return moveScore + bestFutureScore;
+}
+
+// Improved bot with hunger system and bonus priority
+void botControlWithSimulation() {
+    if (gameOver || !botEnabled) return;
+
+    // Update hunger penalty
+    updateHungerPenalty();
+
+    SimulationState baseState;
+    copyGameStateToSimulation(&baseState);
+
+    float bestScore = -10000.0f;
+    enum Direction bestDir = NONE;
+    enum Direction directions[] = { UP, RIGHT, DOWN, LEFT };
+
+    // PRIORITY 1: Check moves that lead directly to a bonus
+    if (currentBonus.type != -1) {
+        for (int i = 0; i < 4; i++) {
+            Segment testHead = baseState.snake[0];
+            switch (directions[i]) {
+            case UP:    testHead.y--; break;
+            case DOWN:  testHead.y++; break;
+            case LEFT:  testHead.x--; break;
+            case RIGHT: testHead.x++; break;
+            case NONE: continue;
+            }
+
+            // If this move leads directly to the bonus and is safe - choose it immediately!
+            if (testHead.x == currentBonus.x && testHead.y == currentBonus.y) {
+                if (isPositionValidInSimulation(&baseState, testHead.x, testHead.y)) {
+                    pendingDir = directions[i];
+                    return; // Exit function, we have the best move
+                }
+            }
+        }
+    }
+
+    // PRIORITY 2: Check moves that lead directly to food
+    for (int i = 0; i < 4; i++) {
+        Segment testHead = baseState.snake[0];
+        switch (directions[i]) {
+        case UP:    testHead.y--; break;
+        case DOWN:  testHead.y++; break;
+        case LEFT:  testHead.x--; break;
+        case RIGHT: testHead.x++; break;
+        case NONE: continue;
+        }
+
+        // If this move leads directly to food and is safe - choose it immediately!
+        if (testHead.x == foodX && testHead.y == foodY) {
+            if (isPositionValidInSimulation(&baseState, testHead.x, testHead.y)) {
+                pendingDir = directions[i];
+                return; // Exit function, we have the best move
+            }
+        }
+    }
+
+    // PRIORITY 3: Main simulation with fixed depth (if no immediate food/bonus)
+    int simulationDepth = SIMULATION_DEPTH;
+
+    for (int i = 0; i < 4; i++) {
+        Segment testHead = baseState.snake[0];
+        switch (directions[i]) {
+        case UP:    testHead.y--; break;
+        case DOWN:  testHead.y++; break;
+        case LEFT:  testHead.x--; break;
+        case RIGHT: testHead.x++; break;
+        case NONE: continue;
+        }
+
+        if (!isPositionValidInSimulation(&baseState, testHead.x, testHead.y)) {
+            continue;
+        }
+
+        float score = simulateGame(&baseState, directions[i], simulationDepth);
+
+        // Small bonus for continuing in the same direction
+        if (directions[i] == dir) {
+            score += 3.0f;
+        }
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestDir = directions[i];
+        }
+    }
+
+    if (bestDir != NONE) {
+        pendingDir = bestDir;
+        return;
+    }
+
+    // Fallback: any safe move
+    int headX = snake[0].x;
+    int headY = snake[0].y;
+    enum Direction safeDirs[] = { UP, RIGHT, DOWN, LEFT };
+
+    for (int i = 0; i < 4; i++) {
+        int nx = headX, ny = headY;
+        switch (safeDirs[i]) {
+        case UP:    ny--; break;
+        case DOWN:  ny++; break;
+        case LEFT:  nx--; break;
+        case RIGHT: nx++; break;
+        case NONE: continue;
+        }
+
+        if (isPositionValid(nx, ny)) {
+            pendingDir = safeDirs[i];
+            return;
+        }
+    }
+}
+
+// Keep original bot control but call our new simulation-based one
+void botControl() {
+    botControlWithSimulation();
+}
+
+int calculateFreeSpace() {
     int visited[40][30] = { 0 };
     int queue[1200][2];
     int front = 0, rear = 0;
@@ -268,138 +653,81 @@ int calculateFreeSpace() {
         }
     }
 
-    // Кэшируем результат
-    cachedFreeSpace = count;
-    lastHeadX = snake[0].x;
-    lastHeadY = snake[0].y;
-    lastSnakeLength = snakeLength;
-    cacheValid = 1;
-
     return count;
 }
 
-// Conservative panic detection with caching
 int shouldPanic() {
-    static int lastPanicCheckFrame = 0;
-    static int cachedPanicResult = 0;
-
-    // Проверяем панику только каждый 3-й кадр для оптимизации
-    if (cacheFrame - lastPanicCheckFrame < 3) {
-        return cachedPanicResult;
-    }
-
-    lastPanicCheckFrame = cacheFrame;
-
     int totalCells = (fieldMaxX - fieldMinX + 1) * (fieldMaxY - fieldMinY + 1);
-    int freeSpace = calculateFreeSpace(); // Используем кэшированную версию
+    int freeSpace = calculateFreeSpace();
     float percentage = (float)freeSpace / totalCells;
 
-    cachedPanicResult = percentage < 0.6f;
-    return cachedPanicResult;
+    return percentage < 0.8f;
 }
 
-// Smart safe direction finding that avoids self-trapping
+enum Direction getFirstMove(int startX, int startY, int targetX, int targetY) {
+    if (!findPath(startX, startY, targetX, targetY)) return NONE;
+
+    // Trace back to find first move
+    int currentX = targetX, currentY = targetY;
+
+    while (!(nodes[currentX][currentY].parentX == startX &&
+        nodes[currentX][currentY].parentY == startY)) {
+        int parentX = nodes[currentX][currentY].parentX;
+        int parentY = nodes[currentX][currentY].parentY;
+
+        if (parentX == -1 || parentY == -1) return NONE;
+
+        currentX = parentX;
+        currentY = parentY;
+    }
+
+    if (currentX == startX && currentY == startY - 1) return UP;
+    if (currentX == startX && currentY == startY + 1) return DOWN;
+    if (currentX == startX - 1 && currentY == startY) return LEFT;
+    if (currentX == startX + 1 && currentY == startY) return RIGHT;
+
+    return NONE;
+}
+
 void findSafeDirection() {
     int headX = snake[0].x;
     int headY = snake[0].y;
-    
-    int dx[] = {0, 1, 0, -1};
-    int dy[] = {-1, 0, 1, 0};
-    enum Direction dirs[] = {UP, RIGHT, DOWN, LEFT};
-    
-    // Find direction with most accessible space
+
+    int dx[] = { 0, 1, 0, -1 };
+    int dy[] = { -1, 0, 1, 0 };
+    enum Direction dirs[] = { UP, RIGHT, DOWN, LEFT };
+
+    // For longer snakes, find direction with most free space
     int bestDir = NONE;
     int maxSpace = -1;
-    
+
     for (int i = 0; i < 4; i++) {
         int newX = headX + dx[i];
         int newY = headY + dy[i];
-        
+
         if (isPositionValid(newX, newY)) {
-            // Temporarily move head to check accessible space
+            // Temporarily move head to check space
             Segment tempHead = snake[0];
             snake[0].x = newX;
             snake[0].y = newY;
-            
+
             int space = calculateFreeSpace();
-            
+
             if (space > maxSpace) {
                 maxSpace = space;
                 bestDir = dirs[i];
             }
-            
+
             // Restore head position
             snake[0] = tempHead;
         }
     }
-    
+
     if (bestDir != NONE) {
         pendingDir = bestDir;
-    } else {
-        // Last resort: any valid move
-        for (int i = 0; i < 4; i++) {
-            int newX = headX + dx[i];
-            int newY = headY + dy[i];
-            if (isPositionValid(newX, newY)) {
-                pendingDir = dirs[i];
-                return;
-            }
-        }
     }
 }
 
-// Improved bot control with reliable A* as primary strategy
-void botControl() {
-    if (gameOver || !botEnabled) return;
-
-    // Обновляем счетчик кадров для кэширования
-    cacheFrame++;
-
-    panicMode = shouldPanic(); // Используем кэшированную проверку паники
-
-    if (panicMode) {
-        findSafeDirection();
-        return;
-    }
-
-    int headX = snake[0].x;
-    int headY = snake[0].y;
-
-    // Prioritize bonus over food
-    int targetX, targetY;
-    if (currentBonus.type != -1) {
-        targetX = currentBonus.x;
-        targetY = currentBonus.y;
-    }
-    else {
-        targetX = foodX;
-        targetY = foodY;
-    }
-
-    // Use A* pathfinding as primary strategy
-    enum Direction nextDir = getFirstMove(headX, headY, targetX, targetY);
-
-    if (nextDir != NONE) {
-        pendingDir = nextDir;
-    }
-    else {
-        // If no path to primary target, try alternative strategies
-
-        // For bonus, try path to food instead
-        if (currentBonus.type != -1) {
-            nextDir = getFirstMove(headX, headY, foodX, foodY);
-            if (nextDir != NONE) {
-                pendingDir = nextDir;
-                return;
-            }
-        }
-
-        // If still no path, find safe direction
-        findSafeDirection();
-    }
-}
-
-// В функции initGame добавляем сброс кэша
 void initGame(int level) {
     for (int i = 0; i < MAX_SNAKE_LENGTH; i++) {
         snake[i].x = 0;
@@ -414,18 +742,13 @@ void initGame(int level) {
     gameOver = 0;
     score = 0;
     foodEaten = 0;
-    lastBonusTime = -30.0;
     currentBonus.type = -1;
-    multiplierActive = 0;
+    multiplierCount = 0;
     panicMode = 0;
 
-    // Сбрасываем кэш
-    cacheValid = 0;
-    cachedFreeSpace = 0;
-    lastHeadX = -1;
-    lastHeadY = -1;
-    lastSnakeLength = -1;
-    cacheFrame = 0;
+    // Reset hunger system
+    hungerCounter = 0;
+    currentHungerPenalty = 0.0f;
 
     currentLevel = level;
 
@@ -512,7 +835,7 @@ int generateBonus() {
         currentBonus.x = fieldMinX + rand() % (fieldMaxX - fieldMinX + 1);
         currentBonus.y = fieldMinY + rand() % (fieldMaxY - fieldMinY + 1);
         currentBonus.type = rand() % 3;
-        currentBonus.spawnTime = glfwGetTime();
+        currentBonus.lifetime = BONUS_LIFETIME; // 100 ходов вместо времени
 
         if (!isPositionValid(currentBonus.x, currentBonus.y)) valid = 0;
         if (currentBonus.x == foodX && currentBonus.y == foodY) valid = 0;
@@ -534,11 +857,10 @@ int generateBonus() {
 
 void applyBonusEffect(int type) {
     switch (type) {
-    case 0:
-        multiplierActive = 1;
-        multiplierStartTime = glfwGetTime();
+    case 0: // Yellow - x2 points for next 5 apples
+        multiplierCount = 5;
         break;
-    case 1:
+    case 1: // Pink - remove 3 tail segments
     {
         int newLength = snakeLength > 3 ? snakeLength - 3 : 1;
         for (int i = newLength; i < snakeLength; i++) {
@@ -548,7 +870,7 @@ void applyBonusEffect(int type) {
         snakeLength = newLength;
     }
     break;
-    case 2:
+    case 2: // Blue - +5 points +2 segments
         score += 5;
         if (snakeLength + 2 <= MAX_SNAKE_LENGTH) {
             Segment last = snake[snakeLength - 1];
@@ -690,8 +1012,14 @@ void updateGame() {
     snake[0] = newHead;
 
     if (newHead.x == foodX && newHead.y == foodY) {
-        if (multiplierActive) score += 2;
-        else score += 1;
+        // Apply multiplier if active
+        if (multiplierCount > 0) {
+            score += 2;
+            multiplierCount--;
+        }
+        else {
+            score += 1;
+        }
 
         if (snakeLength < MAX_SNAKE_LENGTH) {
             snakeLength++;
@@ -700,13 +1028,10 @@ void updateGame() {
 
         foodEaten++;
 
-        if (foodEaten >= 3 && glfwGetTime() - lastBonusTime >= 30.0) {
+        // Spawn bonus every 5 apples
+        if (foodEaten >= 5 && currentBonus.type == -1) {
             if (generateBonus()) {
                 foodEaten = 0;
-                lastBonusTime = glfwGetTime();
-            }
-            else {
-                foodEaten = 3;
             }
         }
 
@@ -728,13 +1053,16 @@ void updateGame() {
         currentBonus.type = -1;
     }
 
-    if (currentBonus.type != -1 && glfwGetTime() - currentBonus.spawnTime >= 10.0) {
-        currentBonus.type = -1;
+    // Update bonus lifetime
+    if (currentBonus.type != -1) {
+        currentBonus.lifetime--;
+        if (currentBonus.lifetime <= 0) {
+            currentBonus.type = -1;
+        }
     }
 
-    if (multiplierActive && glfwGetTime() - multiplierStartTime >= 20.0) {
-        multiplierActive = 0;
-    }
+    // Update hunger counter (after snake movement)
+    updateHungerPenalty();
 }
 
 void drawSquare(int x, int y) {
@@ -830,11 +1158,11 @@ void drawInfo() {
         const char* text;
         int ypos;
     } bonuses[] = {
-        {{1.0f, 1.0f, 0.0f}, "* Yellow - x2 points for 10sec", 150},
+        {{1.0f, 1.0f, 0.0f}, "* Yellow - x2 points for 5 apples", 150},
         {{1.0f, 0.5f, 0.7f}, "* Pink - remove 3 tail segments", 250},
         {{0.0f, 0.0f, 1.0f}, "* Blue - +5 points +2 segments", 350},
-        {{1.0f, 1.0f, 1.0f}, " Bonuses appear after 3 points", 450},
-        {{1.0f, 1.0f, 1.0f}, " appears 30sec, disappears 10sec", 500}
+        {{1.0f, 1.0f, 1.0f}, " Bonuses appear after 5 points", 450},
+        {{1.0f, 1.0f, 1.0f}, " disappears after 25 moves", 500}
     };
 
     for (int i = 0; i < 5; i++) {
@@ -868,6 +1196,11 @@ void render() {
             case 2: glColor3f(0.0f, 0.0f, 1.0f); break;
             }
             drawSquare(currentBonus.x, currentBonus.y);
+
+            // Display bonus lifetime
+            char bonusText[32];
+            sprintf(bonusText, "%d", currentBonus.lifetime);
+            renderText(bonusText, currentBonus.x * CELL_SIZE + 5, currentBonus.y * CELL_SIZE + 5, 2.0f);
         }
 
         if (!gameOver) {
@@ -875,13 +1208,21 @@ void render() {
             sprintf(scoreText, "Score: %d", score);
             renderText(scoreText, 25, 30, 4.0f);
 
+            // Display multiplier status
+            if (multiplierCount > 0) {
+                char multiplierText[32];
+                sprintf(multiplierText, "x2: %d", multiplierCount);
+                renderText(multiplierText, 25, 100, 3.0f);
+            }
+
             // Display bot status
             if (botEnabled) {
                 renderText("Bot: ON", WIDTH - 150, 30, 3.0f);
                 if (panicMode) {
                     renderText("PANIC MODE", WIDTH - 200, 60, 3.0f);
                 }
-            } else {
+            }
+            else {
                 renderText("Bot: OFF", WIDTH - 150, 30, 3.0f);
             }
         }
@@ -922,7 +1263,7 @@ int main() {
     srand((unsigned int)time(NULL));  //    
 
     if (!glfwInit()) return -1;
-    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Snake Game with Reliable Bot", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Snake Game with Improved Bot", NULL, NULL);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
